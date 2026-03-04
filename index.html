@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PooPoo Tracker 🐾</title>
+
+<!-- ══════════════════════════════════════════
+  🔥 Firebase SDK
+══════════════════════════════════════════ -->
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, orderBy, Timestamp }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+/* ══════════════════════════════════════════
+  ⚙️  貼上你的 firebaseConfig（只改這裡）
+══════════════════════════════════════════ */
+const firebaseConfig = {
+    apiKey: "AIzaSyAgELX2jDGjTB0-YAuVBEbpbpk6HKMNXfI",
+    authDomain: "poopoo-tracker.firebaseapp.com",
+    projectId: "poopoo-tracker",
+    storageBucket: "poopoo-tracker.firebasestorage.app",
+    messagingSenderId: "663168737202",
+    appId: "1:663168737202:web:2e5e4fc369694f2d550eab"
+  };
+/* ══════════════════════════════════════════ */
+
+const app  = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db   = getFirestore(app);
+
+// ── AI mock ──
+const TAGS = {
+  great: ['#健康良好','#顏色正常','#形狀理想','#消化順暢'],
+  good:  ['#整體正常','#水分充足','#飲食均衡','#排便規律'],
+  warn:  ['#注意水分','#稍軟便','#建議觀察','#飲食調整'],
+  bad:   ['#軟便偏多','#水分不足','#建議就醫','#腸胃不適'],
+};
+function mockAnalyze() {
+  const r = Math.random();
+  const pool = r>.6?'great':r>.4?'good':r>.2?'warn':'bad';
+  const base = {great:8,good:6,warn:4,bad:2}[pool];
+  const score = Math.min(base + Math.floor(Math.random()*2), 10);
+  const tags = [...TAGS[pool]].sort(()=>Math.random()-.5).slice(0,2);
+  tags.push('#AI分析完成');
+  return { ai_tags: tags, health_score: score };
+}
+
+const $ = id => document.getElementById(id);
+
+// ── Auth state ──
+onAuthStateChanged(auth, user => {
+  if (user) {
+    showApp();
+  } else {
+    showLogin();
+  }
+});
+
+function showLogin() {
+  $('app-shell').classList.add('hidden');
+  $('app-shell').style.display = 'none';
+  $('login-page').classList.remove('hidden');
+}
+function showApp() {
+  $('login-page').classList.add('hidden');
+  $('app-shell').classList.remove('hidden');
+  $('app-shell').style.display = 'flex';
+  setDefaultTimes();
+}
+
+// ── Register / Login ──
+let isReg = false;
+$('toggle-mode').addEventListener('click', () => {
+  isReg = !isReg;
+  $('auth-title').textContent   = isReg ? '建立帳號' : '登入帳號';
+  $('auth-sub').textContent     = isReg ? '開始記錄毛孩的每一步' : '歡迎回來，記錄毛孩的健康';
+  $('auth-btn').textContent     = isReg ? '建立帳號' : '登入';
+  $('toggle-label').textContent = isReg ? '已有帳號？' : '還沒有帳號？';
+  $('toggle-mode').textContent  = isReg ? '登入' : '立即註冊';
+  $('field-name').classList.toggle('hidden', !isReg);
+  $('auth-error').classList.add('hidden');
+});
+
+$('inp-password').addEventListener('keydown', e => { if (e.key==='Enter') doAuth(); });
+$('auth-btn').addEventListener('click', doAuth);
+
+async function doAuth() {
+  const email = $('inp-email').value.trim();
+  const pass  = $('inp-password').value;
+  $('auth-error').classList.add('hidden');
+  if (!email || !pass) return showAuthErr('請填寫 Email 與密碼');
+  $('auth-btn').disabled = true;
+  $('auth-btn').innerHTML = '<span class="spin"></span>';
+  try {
+    if (isReg) {
+      await createUserWithEmailAndPassword(auth, email, pass);
+    } else {
+      await signInWithEmailAndPassword(auth, email, pass);
+    }
+    // onAuthStateChanged will fire showApp()
+  } catch(e) {
+    const msg = {
+      'auth/email-already-in-use': 'Email 已被使用',
+      'auth/invalid-email':        'Email 格式錯誤',
+      'auth/weak-password':        '密碼至少需要 6 個字元',
+      'auth/user-not-found':       '帳號不存在',
+      'auth/wrong-password':       '密碼錯誤',
+      'auth/invalid-credential':   '帳號或密碼錯誤',
+    }[e.code] || e.message;
+    showAuthErr(msg);
+  } finally {
+    $('auth-btn').disabled = false;
+    $('auth-btn').textContent = isReg ? '建立帳號' : '登入';
+  }
+}
+function showAuthErr(msg) { $('auth-error').textContent = msg; $('auth-error').classList.remove('hidden'); }
+
+$('logout-btn').addEventListener('click', () => signOut(auth));
+
+// ── Default times ──
+function setDefaultTimes() {
+  const now   = new Date();
+  const start = new Date(now - 30*60000);
+  $('inp-start').value = toHHMM(start);
+  $('inp-end').value   = toHHMM(now);
+  updateDur();
+}
+function toHHMM(d) {
+  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+}
+function updateDur() {
+  const s = $('inp-start').value, e = $('inp-end').value;
+  if (!s || !e) { $('dur-display').classList.add('hidden'); return; }
+  const [sh,sm] = s.split(':').map(Number);
+  const [eh,em] = e.split(':').map(Number);
+  let mins = (eh*60+em)-(sh*60+sm);
+  if (mins <= 0) { $('dur-display').classList.add('hidden'); return; }
+  $('dur-text').textContent = mins>=60 ? `${Math.floor(mins/60)} 小時 ${mins%60} 分鐘` : `${mins} 分鐘`;
+  $('dur-display').classList.remove('hidden');
+}
+$('inp-start').addEventListener('change', updateDur);
+$('inp-end').addEventListener('change',   updateDur);
+
+// ── Nav ──
+document.querySelectorAll('.nav-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    ['checkin','records','stats'].forEach(p =>
+      $('page-'+p).classList.toggle('hidden', p !== btn.dataset.page));
+    if (btn.dataset.page === 'records') loadRecords();
+    if (btn.dataset.page === 'stats')   loadStats();
+  });
+});
+
+// ── Photo ──
+let photoFile = null;
+$('photo-input').addEventListener('change', e => { if (e.target.files[0]) setPhoto(e.target.files[0]); });
+const dz = $('dropzone');
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => {
+  e.preventDefault(); dz.classList.remove('drag-over');
+  const f = e.dataTransfer.files[0];
+  if (f && f.type.startsWith('image/')) setPhoto(f);
+});
+function setPhoto(f) {
+  photoFile = f;
+  $('preview-img').src = URL.createObjectURL(f);
+  $('preview-img').classList.remove('hidden');
+  $('dz-content').classList.add('hidden');
+  $('clear-row').classList.remove('hidden');
+  $('clear-row').style.display = 'flex';
+}
+$('clear-photo-btn').addEventListener('click', () => {
+  photoFile = null;
+  $('preview-img').classList.add('hidden');
+  $('dz-content').classList.remove('hidden');
+  $('clear-row').classList.add('hidden');
+  $('photo-input').value = '';
+});
+
+// ── Convert photo to base64 greyscale ──
+function fileToGrayscaleBase64(file) {
+  return new Promise(resolve => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.min(img.width, 800);
+      canvas.height = Math.round(img.height * (canvas.width / img.width));
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      // Greyscale filter
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const g = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
+        d[i] = d[i+1] = d[i+2] = g;
+      }
+      ctx.putImageData(imgData, 0, 0);
+      URL.revokeObjectURL(url);
+      resolve(canvas.toDataURL('image/jpeg', 0.75));
+    };
+    img.src = url;
+  });
+}
+
+// ── Submit walk ──
+$('submit-btn').addEventListener('click', submitWalk);
+
+async function submitWalk() {
+  const user = auth.currentUser;
+  if (!user) return;
+  const startT = $('inp-start').value;
+  const endT   = $('inp-end').value;
+  if (!startT) { alert('請填寫開始時間'); return; }
+
+  let durSec = 0;
+  if (startT && endT) {
+    const [sh,sm] = startT.split(':').map(Number);
+    const [eh,em] = endT.split(':').map(Number);
+    let mins = (eh*60+em)-(sh*60+sm);
+    if (mins < 0) mins += 24*60;
+    durSec = mins * 60;
+  }
+
+  const today    = new Date().toISOString().slice(0,10);
+  const startISO = `${today}T${startT}:00`;
+  const endISO   = endT ? `${today}T${endT}:00` : null;
+
+  const btn = $('submit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span> AI 分析中...';
+  $('ai-result').classList.add('hidden');
+
+  try {
+    // Convert photo to greyscale base64 (stored in Firestore)
+    let photoBase64 = null;
+    if (photoFile) {
+      photoBase64 = await fileToGrayscaleBase64(photoFile);
+    }
+
+    // Mock AI analysis
+    await new Promise(r => setTimeout(r, 900));
+    const { ai_tags, health_score } = mockAnalyze();
+
+    // Save to Firestore
+    await addDoc(collection(db, 'walks'), {
+      uid:          user.uid,
+      start_time:   startISO,
+      end_time:     endISO,
+      duration:     durSec,
+      photo_base64: photoBase64,
+      ai_tags,
+      health_score,
+      notes:        $('walk-notes').value.trim(),
+      created_at:   Timestamp.now(),
+    });
+
+    showAIResult({ ai_tags, health_score });
+    $('walk-notes').value = '';
+    $('clear-photo-btn').click();
+    setDefaultTimes();
+  } catch(e) {
+    alert('打卡失敗：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '完成打卡 ✓';
+  }
+}
+
+function showAIResult({ ai_tags, health_score }) {
+  const circ = 144.5;
+  const arc  = $('score-arc');
+  arc.setAttribute('stroke-dasharray', `${(health_score/10)*circ} ${circ}`);
+  const color     = health_score>=7?'#22C55E':health_score>=4?'#F59E0B':'#EF4444';
+  const textColor = health_score>=7?'#4ade80':health_score>=4?'#fb923c':'#f87171';
+  arc.setAttribute('stroke', color);
+  $('score-num').textContent = health_score;
+  $('score-num').style.color = textColor;
+  $('score-label').textContent = health_score>=7?'👍 良好':health_score>=4?'⚠️ 注意':'🚨 警告';
+  const tagRow = $('ai-tags');
+  tagRow.innerHTML = '';
+  ['badge-green','badge-purple','badge-amber'].forEach((cls,i) => {
+    if (!ai_tags[i]) return;
+    const s = document.createElement('span');
+    s.className = `badge ${cls}`;
+    s.style.animationDelay = `${i*0.1}s`;
+    s.textContent = ai_tags[i];
+    tagRow.appendChild(s);
+  });
+  $('ai-result').classList.remove('hidden');
+}
+
+// ── Load records ──
+$('refresh-btn').addEventListener('click', loadRecords);
+
+async function loadRecords() {
+  const user = auth.currentUser;
+  if (!user) return;
+  $('records-list').innerHTML = '<div style="display:flex;justify-content:center;padding:48px"><span class="spin" style="width:32px;height:32px;border-width:3px"></span></div>';
+  try {
+    const q = query(
+      collection(db, 'walks'),
+      where('uid', '==', user.uid),
+      orderBy('created_at', 'desc')
+    );
+    const snap = await getDocs(q);
+    const recs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderRecords(recs);
+  } catch(e) {
+    $('records-list').innerHTML = `<div class="empty"><div class="empty-emoji">😵</div><div>${e.message}</div></div>`;
+  }
+}
+
+function renderRecords(recs) {
+  if (!recs.length) {
+    $('records-list').innerHTML = '<div class="empty"><div class="empty-emoji">🐕</div><p style="font-size:16px;margin-bottom:6px">還沒有任何紀錄</p><p style="font-size:13px">去打卡頁面記錄第一次遛狗！</p></div>';
+    return;
+  }
+  $('records-list').innerHTML = recs.map((r, i) => {
+    const thumb = r.photo_base64
+      ? `<img class="rec-thumb" src="${r.photo_base64}" alt="" onclick="openLightbox('${r.photo_base64}')">`
+      : `<div class="rec-placeholder">🐾</div>`;
+    const sc = r.health_score;
+    const textColor = sc>=7?'#4ade80':sc>=4?'#fb923c':'#f87171';
+    const barColor  = sc>=7?'var(--green)':sc>=4?'#f59e0b':'#ef4444';
+    const tags = (r.ai_tags||[]).map(t => `<span class="badge badge-purple" style="font-size:11px">${t}</span>`).join('');
+    const timeStr = fmtTimeRange(r.start_time, r.end_time);
+    const durStr  = r.duration ? fmtDur(r.duration) : '—';
+    const note    = r.notes ? ` · ${r.notes.slice(0,28)}${r.notes.length>28?'…':''}` : '';
+    return `<div class="rec-card" style="animation-delay:${i*0.05}s">
+      ${thumb}
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+          <div>
+            <div style="font-weight:600;font-size:15px">${timeStr}</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:2px">⏱ ${durStr}${note}</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
+            <span style="font-size:18px;font-weight:800;color:${textColor}">${sc}</span>
+            <button class="btn-danger" onclick="deleteRecord('${r.id}')">刪除</button>
+          </div>
+        </div>
+        <div class="hbar"><div class="hbar-fill" style="width:${sc*10}%;background:${barColor}"></div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:7px">${tags}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.deleteRecord = async function(id) {
+  if (!confirm('確定刪除這筆紀錄？')) return;
+  try {
+    await deleteDoc(doc(db, 'walks', id));
+    loadRecords();
+  } catch(e) { alert('刪除失敗：' + e.message); }
+};
+
+// ── Stats ──
+async function loadStats() {
+  const user = auth.currentUser;
+  if (!user) return;
+  $('stats-content').innerHTML = '<div style="display:flex;justify-content:center;padding:48px"><span class="spin" style="width:32px;height:32px;border-width:3px"></span></div>';
+  try {
+    const q = query(collection(db,'walks'), where('uid','==',user.uid));
+    const snap = await getDocs(q);
+    const recs = snap.docs.map(d => d.data());
+    const total = recs.length;
+    const avgH  = total ? +(recs.reduce((a,r)=>a+r.health_score,0)/total).toFixed(1) : null;
+    const totalDur = recs.reduce((a,r)=>a+(r.duration||0),0);
+    const lastWalk = recs.sort((a,b)=>b.created_at?.seconds-a.created_at?.seconds)[0]?.created_at;
+    const hc = (avgH||0)>=7?'#4ade80':(avgH||0)>=4?'#fb923c':'var(--purple)';
+    const lastStr = lastWalk ? fmtDate(new Date(lastWalk.seconds*1000)) : null;
+    $('stats-content').innerHTML = `
+      <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val" style="color:var(--purple)">${total}</div><div class="stat-lbl">🐕 總遛狗次數</div></div>
+        <div class="stat-card"><div class="stat-val" style="color:${hc}">${avgH||'—'}</div><div class="stat-lbl">❤️ 平均健康分數</div></div>
+        <div class="stat-card" style="grid-column:1/-1"><div class="stat-val" style="color:#60a5fa">${fmtDur(totalDur)}</div><div class="stat-lbl">⏱ 總遛狗時長</div></div>
+      </div>
+      ${lastStr ? `<div class="card" style="padding:18px"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">最後一次遛狗</div><div style="font-weight:700">${lastStr}</div></div>` : ''}
+      ${!total ? '<div class="empty"><div class="empty-emoji">📈</div><p>開始打卡後，統計就會出現在這裡</p></div>' : ''}`;
+  } catch(e) { $('stats-content').innerHTML = `<div class="empty">${e.message}</div>`; }
+}
+
+// ── Lightbox ──
+window.openLightbox = src => {
+  $('lightbox-img').src = src;
+  $('lightbox').classList.remove('hidden');
+};
+$('lightbox-close').addEventListener('click', () => $('lightbox').classList.add('hidden'));
+$('lightbox').addEventListener('click', e => { if (e.target===$('lightbox')) $('lightbox').classList.add('hidden'); });
+
+// ── Helpers ──
+function fmtTimeRange(start, end) {
+  if (!start) return '—';
+  const t = iso => iso.slice(11,16);
+  const date = start.slice(5,10).replace('-','/');
+  return end ? `${date} ${t(start)} — ${t(end)}` : `${date} ${t(start)}`;
+}
+function fmtDur(sec) {
+  if (!sec) return '—';
+  const m = Math.floor(sec/60);
+  return m>=60 ? `${Math.floor(m/60)} 小時 ${m%60} 分` : `${m} 分鐘`;
+}
+function fmtDate(d) {
+  return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+</script>
+
+<style>
+:root {
+  --purple: #A855F7;
+  --purple-dim: rgba(168,85,247,0.15);
+  --purple-glow: rgba(168,85,247,0.5);
+  --green: #22C55E;
+  --bg: #08080f;
+  --surface: rgba(255,255,255,0.04);
+  --border: rgba(255,255,255,0.08);
+  --text: #e8e8f0;
+  --muted: rgba(232,232,240,0.4);
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;background-image:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(139,92,246,.2) 0%,transparent 70%),radial-gradient(ellipse 50% 40% at 90% 90%,rgba(34,197,94,.07) 0%,transparent 60%)}
+.hidden{display:none!important}
+.page{animation:fadeUp .3s ease both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:20px;backdrop-filter:blur(20px)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:11px 22px;border-radius:12px;border:none;cursor:pointer;font-size:14px;font-weight:500;transition:all .2s;user-select:none;font-family:inherit}
+.btn:active{transform:scale(.95)}
+.btn-primary{background:linear-gradient(135deg,#7c3aed,#9333ea);color:#fff}
+.btn-primary:hover{box-shadow:0 0 28px var(--purple-glow);transform:translateY(-1px)}
+.btn-primary:active{transform:scale(.95);box-shadow:none}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.btn-ghost:hover{background:var(--surface);color:var(--text)}
+.btn-danger{background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.25);padding:6px 12px;font-size:12px;border-radius:8px;cursor:pointer;font-family:inherit;transition:all .2s}
+.btn-danger:hover{background:rgba(239,68,68,.2)}
+.btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+.btn-sm{padding:7px 14px;font-size:13px}
+.w-full{width:100%}
+.input{width:100%;padding:11px 15px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:11px;color:var(--text);font-family:inherit;font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s}
+.input:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(168,85,247,.12)}
+.input::placeholder{color:var(--muted)}
+textarea.input{resize:none;line-height:1.6}
+input[type="time"].input{cursor:pointer}
+input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.35);cursor:pointer}
+.field{margin-bottom:14px}
+.label{font-size:12px;color:var(--muted);margin-bottom:5px;display:block;letter-spacing:.03em}
+.badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:500;animation:pop .4s cubic-bezier(.34,1.56,.64,1) both}
+@keyframes pop{from{opacity:0;transform:scale(.5)}to{opacity:1;transform:scale(1)}}
+.badge-purple{background:rgba(168,85,247,.13);color:#c084fc;border:1px solid rgba(168,85,247,.28)}
+.badge-green{background:rgba(34,197,94,.1);color:#4ade80;border:1px solid rgba(34,197,94,.25)}
+.badge-amber{background:rgba(245,158,11,.1);color:#fbbf24;border:1px solid rgba(245,158,11,.25)}
+.alert-err{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:10px 14px;color:#f87171;font-size:13px;margin-bottom:14px}
+
+/* LOGIN */
+#login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.login-card{width:100%;max-width:400px;padding:36px 32px}
+.login-logo{width:60px;height:60px;border-radius:16px;background:linear-gradient(135deg,#7c3aed,#9333ea);display:flex;align-items:center;justify-content:center;font-size:26px;margin-bottom:22px;box-shadow:0 8px 28px rgba(124,58,237,.4)}
+.divider{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--muted);font-size:12px}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+.toggle-link{color:var(--purple);cursor:pointer}
+.toggle-link:hover{text-decoration:underline}
+
+/* APP */
+.topbar{position:sticky;top:0;z-index:100;padding:13px 24px;display:flex;align-items:center;justify-content:space-between;background:rgba(8,8,15,.85);backdrop-filter:blur(20px);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:700;letter-spacing:-.02em}
+.brand-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+.nav{display:flex;gap:3px}
+.nav-btn{padding:7px 15px;border-radius:9px;border:none;cursor:pointer;font-family:inherit;font-size:13px;background:transparent;color:var(--muted);transition:all .2s}
+.nav-btn:hover{background:var(--surface);color:var(--text)}
+.nav-btn.active{background:var(--purple-dim);color:var(--purple)}
+.main{flex:1;padding:28px 24px;max-width:720px;margin:0 auto;width:100%}
+.section-title{font-size:21px;font-weight:700;margin-bottom:18px;letter-spacing:-.02em}
+.time-row{display:grid;grid-template-columns:1fr 28px 1fr;align-items:end;gap:8px}
+.time-arrow{color:var(--muted);font-size:16px;text-align:center;padding-bottom:11px}
+.dur-pill{display:inline-flex;align-items:center;gap:5px;background:rgba(168,85,247,.1);border:1px solid rgba(168,85,247,.22);border-radius:999px;padding:4px 12px;font-size:12px;color:#c084fc;margin-top:10px}
+.dropzone{border:2px dashed rgba(168,85,247,.3);border-radius:18px;padding:38px 20px;text-align:center;cursor:pointer;transition:all .3s;background:rgba(168,85,247,.02);position:relative;overflow:hidden}
+.dropzone:hover,.dropzone.drag-over{border-color:var(--purple);background:rgba(168,85,247,.07)}
+.dropzone input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.preview-img{width:100%;max-height:230px;object-fit:cover;border-radius:12px;filter:grayscale(100%) contrast(1.1);border:1px solid var(--border)}
+.ai-box{padding:20px;border-radius:16px;background:linear-gradient(135deg,rgba(168,85,247,.07),rgba(34,197,94,.04));border:1px solid rgba(168,85,247,.2);animation:fadeUp .5s cubic-bezier(.34,1.56,.64,1) both;margin-top:18px}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0;animation:pulseAnim 1.5s infinite}
+@keyframes pulseAnim{0%,100%{box-shadow:0 0 0 0 rgba(34,197,94,.4)}50%{box-shadow:0 0 0 8px rgba(34,197,94,0)}}
+.score-wrap{position:relative;width:56px;height:56px;flex-shrink:0}
+.score-wrap svg{transform:rotate(-90deg)}
+.score-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800}
+.tag-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+.rec-card{display:flex;gap:14px;padding:16px;border-radius:16px;border:1px solid var(--border);background:var(--surface);transition:all .2s;animation:fadeUp .4s ease both;margin-bottom:12px}
+.rec-card:hover{border-color:rgba(168,85,247,.28);transform:translateY(-2px);box-shadow:0 6px 24px rgba(168,85,247,.07)}
+.rec-thumb{width:72px;height:72px;border-radius:11px;object-fit:cover;flex-shrink:0;filter:grayscale(100%) contrast(1.1);border:1px solid var(--border);cursor:zoom-in;transition:filter .3s}
+.rec-thumb:hover{filter:none}
+.rec-placeholder{width:72px;height:72px;border-radius:11px;flex-shrink:0;background:rgba(255,255,255,.04);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px}
+.hbar{height:3px;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden;margin-top:8px}
+.hbar-fill{height:100%;border-radius:2px;transition:width 1s ease}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
+.stat-card{padding:20px;border-radius:16px;background:var(--surface);border:1px solid var(--border)}
+.stat-val{font-size:34px;font-weight:800;letter-spacing:-1px}
+.stat-lbl{font-size:12px;color:var(--muted);margin-top:3px}
+#lightbox{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.92);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;animation:fadeIn .2s ease;cursor:pointer}
+#lightbox img{max-width:90vw;max-height:85vh;border-radius:14px;filter:grayscale(100%) contrast(1.1)}
+#lightbox-close{position:absolute;top:18px;right:18px;background:rgba(255,255,255,.1);border:none;color:#fff;width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.empty{text-align:center;padding:56px 20px;color:var(--muted)}
+.empty-emoji{font-size:52px;margin-bottom:14px}
+.spin{width:20px;height:20px;border-radius:50%;border:2px solid rgba(255,255,255,.15);border-top-color:var(--purple);animation:spinAnim .7s linear infinite;display:inline-block}
+@keyframes spinAnim{to{transform:rotate(360deg)}}
+@media(max-width:560px){.topbar{padding:11px 14px}.nav-btn{padding:6px 10px;font-size:12px}.main{padding:18px 14px}.login-card{padding:28px 20px}}
+</style>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-page" class="page">
+  <div class="card login-card">
+    <div class="login-logo">🐾</div>
+    <h2 style="font-size:24px;font-weight:800;margin-bottom:3px" id="auth-title">登入帳號</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:24px" id="auth-sub">歡迎回來，記錄毛孩的健康</p>
+    <div id="auth-error" class="alert-err hidden"></div>
+    <div id="field-name" class="field hidden">
+      <label class="label">名稱（可選）</label>
+      <input class="input" type="text" id="inp-name" placeholder="你的名字">
+    </div>
+    <div class="field">
+      <label class="label">Email</label>
+      <input class="input" type="email" id="inp-email" placeholder="you@example.com">
+    </div>
+    <div class="field">
+      <label class="label">密碼</label>
+      <input class="input" type="password" id="inp-password" placeholder="••••••••（至少 6 位）">
+    </div>
+    <button class="btn btn-primary w-full" id="auth-btn" style="margin-top:4px">登入</button>
+    <div class="divider">還沒有帳號？</div>
+    <p style="text-align:center;font-size:13px;color:var(--muted)">
+      <span id="toggle-label">還沒有帳號？</span>
+      <a class="toggle-link" id="toggle-mode">立即註冊</a>
+    </p>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app-shell" class="hidden" style="flex-direction:column;min-height:100vh">
+  <div class="topbar">
+    <div class="brand">🐾 PooPoo <div class="brand-dot"></div></div>
+    <nav class="nav">
+      <button class="nav-btn active" data-page="checkin">📍 打卡</button>
+      <button class="nav-btn" data-page="records">📋 紀錄</button>
+      <button class="nav-btn" data-page="stats">📊 統計</button>
+    </nav>
+    <button class="btn btn-ghost btn-sm" id="logout-btn">登出</button>
+  </div>
+  <div class="main">
+
+    <!-- CHECK-IN -->
+    <div id="page-checkin" class="page">
+      <div class="section-title">今日打卡 🐕</div>
+      <div class="card" style="padding:22px;margin-bottom:16px">
+        <div class="label" style="margin-bottom:12px">🕐 遛狗時間</div>
+        <div class="time-row">
+          <div>
+            <div class="label">開始時間</div>
+            <input class="input" type="time" id="inp-start">
+          </div>
+          <div class="time-arrow">→</div>
+          <div>
+            <div class="label">結束時間</div>
+            <input class="input" type="time" id="inp-end">
+          </div>
+        </div>
+        <div id="dur-display" class="hidden">
+          <div class="dur-pill">⏱ <span id="dur-text"></span></div>
+        </div>
+      </div>
+
+      <div class="card" style="padding:18px;margin-bottom:16px">
+        <div class="label" style="margin-bottom:10px">📸 上傳糞便照片（自動轉黑白）</div>
+        <div class="dropzone" id="dropzone">
+          <input type="file" id="photo-input" accept="image/*">
+          <div id="dz-content">
+            <div style="font-size:40px;margin-bottom:8px">📷</div>
+            <div style="color:var(--muted);font-size:13px">點擊或拖曳照片至此</div>
+            <div style="color:var(--muted);font-size:11px;margin-top:3px">JPG · PNG · WEBP</div>
+          </div>
+          <img id="preview-img" class="preview-img hidden" alt="">
+        </div>
+        <div id="clear-row" class="hidden" style="margin-top:8px;display:flex;justify-content:flex-end">
+          <button class="btn btn-ghost btn-sm" id="clear-photo-btn">✕ 移除</button>
+        </div>
+      </div>
+
+      <div class="card" style="padding:18px;margin-bottom:16px">
+        <label class="label">備註（可選）</label>
+        <textarea class="input" id="walk-notes" placeholder="今天的狀況..." rows="2"></textarea>
+      </div>
+
+      <button class="btn btn-primary w-full" id="submit-btn" style="padding:15px;font-size:15px">完成打卡 ✓</button>
+
+      <div id="ai-result" class="ai-box hidden">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <div class="pulse"></div>
+          <span style="font-weight:700;font-size:15px">AI 健康分析結果</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:16px;margin-bottom:4px">
+          <div class="score-wrap">
+            <svg width="56" height="56" viewBox="0 0 56 56">
+              <circle cx="28" cy="28" r="23" fill="none" stroke="rgba(255,255,255,0.07)" stroke-width="4"/>
+              <circle id="score-arc" cx="28" cy="28" r="23" fill="none" stroke="#22C55E" stroke-width="4" stroke-linecap="round" stroke-dasharray="0 144.5"/>
+            </svg>
+            <div class="score-num" id="score-num">—</div>
+          </div>
+          <div>
+            <div style="font-size:12px;color:var(--muted)">健康評分</div>
+            <div style="font-size:18px;font-weight:800" id="score-label">—</div>
+          </div>
+        </div>
+        <div class="tag-row" id="ai-tags"></div>
+      </div>
+    </div>
+
+    <!-- RECORDS -->
+    <div id="page-records" class="page hidden">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">
+        <div class="section-title" style="margin-bottom:0">歷史紀錄 📋</div>
+        <button class="btn btn-ghost btn-sm" id="refresh-btn">↻ 刷新</button>
+      </div>
+      <div id="records-list"></div>
+    </div>
+
+    <!-- STATS -->
+    <div id="page-stats" class="page hidden">
+      <div class="section-title">健康統計 📊</div>
+      <div id="stats-content"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" class="hidden">
+  <button id="lightbox-close">✕</button>
+  <img id="lightbox-img" alt="">
+</div>
+
+</body>
+</html>
