@@ -118,6 +118,7 @@ async function doAuth() {
   }
 }
 function showAuthErr(msg) { $('auth-error').textContent = msg; $('auth-error').classList.remove('hidden'); }
+function showFormErr(msg) { $('form-err').textContent = '⚠️ ' + msg; $('form-err').classList.remove('hidden'); }
 
 $('logout-btn').addEventListener('click', () => signOut(auth));
 
@@ -218,7 +219,13 @@ async function submitWalk() {
   if (!user) return;
   const startT = $('inp-start').value;
   const endT   = $('inp-end').value;
-  if (!startT) { alert('請填寫開始時間'); return; }
+  const notes  = $('walk-notes').value.trim();
+  const petName = $('inp-petname').value.trim() || '豆豆';
+
+  if (!startT) { showFormErr('請填寫開始時間'); return; }
+  if (!photoFile) { showFormErr('請上傳糞便照片'); return; }
+  if (!notes)  { showFormErr('請填寫備註'); return; }
+  $('form-err').classList.add('hidden');
 
   let durSec = 0;
   if (startT && endT) {
@@ -252,6 +259,7 @@ async function submitWalk() {
     // Save to Firestore
     await addDoc(collection(db, 'walks'), {
       uid:          user.uid,
+      pet_name:     petName,
       start_time:   startISO,
       end_time:     endISO,
       duration:     durSec,
@@ -262,8 +270,10 @@ async function submitWalk() {
       created_at:   Timestamp.now(),
     });
 
+    $('ai-result').classList.add('hidden');
     showAIResult({ ai_tags, health_score });
     $('walk-notes').value = '';
+    $('inp-petname').value = '豆豆';
     $('clear-photo-btn').click();
     setDefaultTimes();
   } catch(e) {
@@ -559,6 +569,10 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
     <!-- CHECK-IN -->
     <div id="page-checkin" class="page">
       <div class="section-title">今日打卡 🐕</div>
+      <div class="card" style="padding:18px;margin-bottom:16px">
+        <label class="label">🐶 毛小孩名稱</label>
+        <input class="input" type="text" id="inp-petname" placeholder="豆豆" value="豆豆">
+      </div>
       <div class="card" style="padding:22px;margin-bottom:16px">
         <div class="label" style="margin-bottom:12px">🕐 遛狗時間</div>
         <div class="time-row">
@@ -595,9 +609,10 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
 
       <div class="card" style="padding:18px;margin-bottom:16px">
         <label class="label">備註（可選）</label>
-        <textarea class="input" id="walk-notes" placeholder="今天的狀況..." rows="2"></textarea>
+        <textarea class="input" id="walk-notes" placeholder="今天的狀況...（必填）" rows="2"></textarea>
       </div>
 
+      <div id="form-err" class="alert-err hidden"></div>
       <button class="btn btn-primary w-full" id="submit-btn" style="padding:15px;font-size:15px">完成打卡 ✓</button>
 
       <div id="ai-result" class="ai-box hidden">
