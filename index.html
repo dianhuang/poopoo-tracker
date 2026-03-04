@@ -367,8 +367,7 @@ async function submitWalk() {
   $('ai-result').classList.add('hidden');
   try {
     const photoBase64 = await fileToGrayscaleBase64(photoFile);
-    await new Promise(r=>setTimeout(r,900));
-    const {ai_tags,health_score} = mockAnalyze();
+    const {ai_tags,health_score,summary} = await analyzeWithGemini(photoBase64);
     // Store under group, not user
     await addDoc(collection(db,'groups',currentGroupId,'walks'), {
       uid:          currentUser.uid,
