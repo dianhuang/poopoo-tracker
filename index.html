@@ -53,21 +53,26 @@ initTheme();
 let currentGroupId = null;  // 目前所在群組 ID
 let currentUser    = null;
 
-// ── AI mock ──
-const TAGS = {
-  great: ['#健康良好','#顏色正常','#形狀理想','#消化順暢'],
-  good:  ['#整體正常','#水分充足','#飲食均衡','#排便規律'],
-  warn:  ['#注意水分','#稍軟便','#建議觀察','#飲食調整'],
-  bad:   ['#軟便偏多','#水分不足','#建議就醫','#腸胃不適'],
-};
-function mockAnalyze() {
-  const r = Math.random();
-  const pool = r>.6?'great':r>.4?'good':r>.2?'warn':'bad';
-  const base = {great:8,good:6,warn:4,bad:2}[pool];
-  const score = Math.min(base + Math.floor(Math.random()*2), 10);
-  const tags = [...TAGS[pool]].sort(()=>Math.random()-.5).slice(0,2);
-  tags.push('#AI分析完成');
-  return { ai_tags: tags, health_score: score };
+// ── Gemini AI 分析 ──
+const WORKER_URL = 'https://poopoo-analyzer.jacksonexhuang.workers.dev';
+
+async function analyzeWithGemini(photoBase64) {
+  try {
+    const res = await fetch(WORKER_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: photoBase64 })
+    });
+    if (!res.ok) throw new Error('Worker 回應錯誤 ' + res.status);
+    const data = await res.json();
+    // Ensure tags are present
+    if (!data.ai_tags || !data.health_score) throw new Error('回應格式錯誤');
+    return data;
+  } catch(e) {
+    console.error('Gemini 分析失敗:', e);
+    // Fallback
+    return { ai_tags: ['#分析失敗','#請重試'], health_score: 5, summary: '無法連線到 AI' };
+  }
 }
 
 // ── Auth ──
@@ -358,7 +363,7 @@ async function submitWalk() {
   }
   const today=new Date().toISOString().slice(0,10);
   const btn=$('submit-btn');
-  btn.disabled=true; btn.innerHTML='<span class="spin"></span> AI 分析中...';
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span> Gemini 分析中...';
   $('ai-result').classList.add('hidden');
   try {
     const photoBase64 = await fileToGrayscaleBase64(photoFile);
@@ -374,6 +379,7 @@ async function submitWalk() {
       duration:     durSec,
       photo_base64: photoBase64,
       ai_tags, health_score,
+      summary: summary || '',
       notes,
       created_at:   Timestamp.now(),
     });
@@ -397,6 +403,8 @@ function showAIResult({ai_tags,health_score}) {
   arc.setAttribute('stroke',color);
   $('score-num').textContent=health_score; $('score-num').style.color=tc;
   $('score-label').textContent=health_score>=7?'👍 良好':health_score>=4?'⚠️ 注意':'🚨 警告';
+  const sumEl=$('ai-summary');
+  if(sumEl){ sumEl.textContent=summary||''; sumEl.style.display=summary?'block':'none'; }
   const tagRow=$('ai-tags'); tagRow.innerHTML='';
   ['badge-green','badge-purple','badge-amber'].forEach((cls,i)=>{
     if(!ai_tags[i]) return;
@@ -754,6 +762,7 @@ body.dark input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1)
           </div>
         </div>
         <div class="tag-row" id="ai-tags"></div>
+        <div id="ai-summary" style="font-size:13px;color:var(--muted);margin-top:10px;display:none"></div>
       </div>
     </div>
 
