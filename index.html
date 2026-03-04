@@ -4,15 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PooPoo Tracker 🐾</title>
-
-<!-- ══════════════════════════════════════════
-  🔥 Firebase SDK
-══════════════════════════════════════════ -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
-import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, orderBy, Timestamp }
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc,
+         getDoc, setDoc, query, where, orderBy, Timestamp }
   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
 /* ══════════════════════════════════════════
@@ -32,6 +29,30 @@ const app  = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db   = getFirestore(app);
 
+const $ = id => document.getElementById(id);
+
+// ── Theme ──
+function initTheme() {
+  const saved = localStorage.getItem('ppt_theme') || 'light';
+  applyTheme(saved);
+}
+function applyTheme(theme) {
+  document.body.classList.toggle('dark', theme === 'dark');
+  localStorage.setItem('ppt_theme', theme);
+  const icon = theme === 'dark' ? '☀️' : '🌙';
+  const btn = $('theme-btn'); if (btn) btn.textContent = icon;
+  const lbtn = $('login-theme-btn'); if (lbtn) lbtn.textContent = icon;
+}
+function toggleTheme() {
+  const isDark = document.body.classList.contains('dark');
+  applyTheme(isDark ? 'light' : 'dark');
+}
+initTheme();
+
+// ── State ──
+let currentGroupId = null;  // 目前所在群組 ID
+let currentUser    = null;
+
 // ── AI mock ──
 const TAGS = {
   great: ['#健康良好','#顏色正常','#形狀理想','#消化順暢'],
@@ -49,79 +70,190 @@ function mockAnalyze() {
   return { ai_tags: tags, health_score: score };
 }
 
-const $ = id => document.getElementById(id);
-
-// ── Auth state ──
-onAuthStateChanged(auth, user => {
+// ── Auth ──
+onAuthStateChanged(auth, async user => {
   if (user) {
-    showApp();
+    currentUser = user;
+    // Check if user already belongs to a group
+    const groupId = await getUserGroup(user.uid);
+    if (groupId) {
+      currentGroupId = groupId;
+      showApp();
+    } else {
+      showGroupSetup();
+    }
   } else {
+    currentUser = null;
+    currentGroupId = null;
     showLogin();
   }
 });
 
-function showLogin() {
-  $('app-shell').classList.add('hidden');
-  $('app-shell').style.display = 'none';
-  $('login-page').classList.remove('hidden');
-}
-function showApp() {
-  $('login-page').classList.add('hidden');
-  $('app-shell').classList.remove('hidden');
-  $('app-shell').style.display = 'flex';
-  setDefaultTimes();
-}
-
-// ── Register / Login ──
 const provider = new GoogleAuthProvider();
-
 $('auth-btn').addEventListener('click', async () => {
   $('auth-error').classList.add('hidden');
   $('auth-btn').disabled = true;
   $('auth-btn').innerHTML = '<span class="spin"></span> 登入中...';
   try {
     await signInWithPopup(auth, provider);
-    // onAuthStateChanged will fire showApp()
   } catch(e) {
     const msg = {
       'auth/popup-closed-by-user':    '登入視窗被關閉，請再試一次',
       'auth/cancelled-popup-request': '登入已取消',
       'auth/popup-blocked':           '請允許彈出視窗後再試',
     }[e.code] || '登入失敗：' + e.message;
-    showAuthErr(msg);
+    $('auth-error').textContent = msg;
+    $('auth-error').classList.remove('hidden');
   } finally {
     $('auth-btn').disabled = false;
-    $('auth-btn').innerHTML = '<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="18"> 使用 Google 登入';
+    $('auth-btn').innerHTML = '<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="20"> 使用 Google 登入';
   }
 });
-function showAuthErr(msg) { $('auth-error').textContent = msg; $('auth-error').classList.remove('hidden'); }
-function showFormErr(msg) { $('form-err').textContent = '⚠️ ' + msg; $('form-err').classList.remove('hidden'); }
 
 $('logout-btn').addEventListener('click', () => signOut(auth));
 
-// ── Default times ──
-function setDefaultTimes() {
-  const now   = new Date();
-  const start = new Date(now - 30*60000);
-  $('inp-start').value = toHHMM(start);
-  $('inp-end').value   = toHHMM(now);
-  updateDur();
+// Theme btn (also available before login)
+window.toggleTheme = toggleTheme;
+
+// ── Group logic ──
+async function getUserGroup(uid) {
+  // Check userProfiles collection for group membership
+  try {
+    const snap = await getDoc(doc(db, 'userProfiles', uid));
+    if (snap.exists() && snap.data().groupId) return snap.data().groupId;
+  } catch(e) {}
+  return null;
 }
-function toHHMM(d) {
-  return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+
+function generateCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
 }
-function updateDur() {
-  const s = $('inp-start').value, e = $('inp-end').value;
-  if (!s || !e) { $('dur-display').classList.add('hidden'); return; }
-  const [sh,sm] = s.split(':').map(Number);
-  const [eh,em] = e.split(':').map(Number);
-  let mins = (eh*60+em)-(sh*60+sm);
-  if (mins <= 0) { $('dur-display').classList.add('hidden'); return; }
-  $('dur-text').textContent = mins>=60 ? `${Math.floor(mins/60)} 小時 ${mins%60} 分鐘` : `${mins} 分鐘`;
-  $('dur-display').classList.remove('hidden');
+
+// Create new group
+$('create-group-btn').addEventListener('click', async () => {
+  const btn = $('create-group-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  $('group-error').classList.add('hidden');
+  try {
+    const code = generateCode();
+    const groupRef = doc(db, 'groups', code);
+    await setDoc(groupRef, {
+      code,
+      owner: currentUser.uid,
+      members: [currentUser.uid],
+      created_at: Timestamp.now(),
+    });
+    // Save group to user profile
+    await setDoc(doc(db, 'userProfiles', currentUser.uid), {
+      groupId: code,
+      displayName: currentUser.displayName,
+    });
+    currentGroupId = code;
+    showApp();
+    showInviteCode(code);
+  } catch(e) {
+    $('group-error').textContent = '建立失敗：' + e.message;
+    $('group-error').classList.remove('hidden');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '建立新群組';
+  }
+});
+
+// Join existing group
+$('join-group-btn').addEventListener('click', async () => {
+  const code = $('inp-invite-code').value.trim().toUpperCase();
+  if (!code) { showGroupErr('請輸入邀請碼'); return; }
+  const btn = $('join-group-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>';
+  $('group-error').classList.add('hidden');
+  try {
+    const groupRef = doc(db, 'groups', code);
+    const groupSnap = await getDoc(groupRef);
+    if (!groupSnap.exists()) { showGroupErr('找不到此邀請碼，請確認再試'); btn.disabled=false; btn.textContent='加入群組'; return; }
+    // Add user to group members
+    const members = groupSnap.data().members || [];
+    if (!members.includes(currentUser.uid)) {
+      await setDoc(groupRef, { ...groupSnap.data(), members: [...members, currentUser.uid] });
+    }
+    await setDoc(doc(db, 'userProfiles', currentUser.uid), {
+      groupId: code,
+      displayName: currentUser.displayName,
+    });
+    currentGroupId = code;
+    showApp();
+  } catch(e) {
+    showGroupErr('加入失敗：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '加入群組';
+  }
+});
+
+function showGroupErr(msg) {
+  $('group-error').textContent = msg;
+  $('group-error').classList.remove('hidden');
 }
-$('inp-start').addEventListener('change', updateDur);
-$('inp-end').addEventListener('change',   updateDur);
+
+// Show invite code modal after creating group
+function showInviteCode(code) {
+  $('display-code').textContent = code;
+  $('invite-modal').classList.remove('hidden');
+}
+$('copy-code-btn').addEventListener('click', () => {
+  navigator.clipboard.writeText($('display-code').textContent);
+  $('copy-code-btn').textContent = '✓ 已複製';
+  setTimeout(() => { $('copy-code-btn').textContent = '複製邀請碼'; }, 2000);
+});
+$('close-modal-btn').addEventListener('click', () => $('invite-modal').classList.add('hidden'));
+
+// Show invite code anytime from topbar
+$('show-code-btn').addEventListener('click', async () => {
+  if (currentGroupId) showInviteCode(currentGroupId);
+});
+
+// Leave group
+$('leave-group-btn').addEventListener('click', async () => {
+  if (!confirm('確定要離開群組嗎？你的打卡紀錄不會被刪除。')) return;
+  try {
+    await setDoc(doc(db, 'userProfiles', currentUser.uid), { groupId: null, displayName: currentUser.displayName });
+    currentGroupId = null;
+    showGroupSetup();
+  } catch(e) { alert('操作失敗：' + e.message); }
+});
+
+// ── Page routing ──
+function showLogin() {
+  ['login-page','group-setup','app-shell','invite-modal'].forEach(id => {
+    const el = $(id);
+    if (el) { el.classList.add('hidden'); el.style.display=''; }
+  });
+  $('login-page').classList.remove('hidden');
+}
+function showGroupSetup() {
+  ['login-page','app-shell','invite-modal'].forEach(id => {
+    const el = $(id);
+    if (el) { el.classList.add('hidden'); el.style.display=''; }
+  });
+  $('group-setup').classList.remove('hidden');
+  $('group-setup').style.display = 'flex';
+  $('setup-user-name').textContent = currentUser?.displayName || '';
+}
+function showApp() {
+  ['login-page','group-setup'].forEach(id => {
+    const el = $(id);
+    if (el) { el.classList.add('hidden'); el.style.display=''; }
+  });
+  $('app-shell').classList.remove('hidden');
+  $('app-shell').style.display = 'flex';
+  $('group-id-label').textContent = `群組：${currentGroupId}`;
+  setDefaultTimes();
+}
 
 // ── Nav ──
 document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -134,6 +266,26 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     if (btn.dataset.page === 'stats')   loadStats();
   });
 });
+
+// ── Times ──
+function setDefaultTimes() {
+  const now = new Date(), start = new Date(now - 30*60000);
+  $('inp-start').value = toHHMM(start);
+  $('inp-end').value   = toHHMM(now);
+  updateDur();
+}
+function toHHMM(d) { return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function updateDur() {
+  const s=$('inp-start').value, e=$('inp-end').value;
+  if (!s||!e) { $('dur-display').classList.add('hidden'); return; }
+  const [sh,sm]=s.split(':').map(Number), [eh,em]=e.split(':').map(Number);
+  let mins=(eh*60+em)-(sh*60+sm);
+  if (mins<=0) { $('dur-display').classList.add('hidden'); return; }
+  $('dur-text').textContent = mins>=60?`${Math.floor(mins/60)} 小時 ${mins%60} 分鐘`:`${mins} 分鐘`;
+  $('dur-display').classList.remove('hidden');
+}
+$('inp-start').addEventListener('change', updateDur);
+$('inp-end').addEventListener('change',   updateDur);
 
 // ── Photo ──
 let photoFile = null;
@@ -162,25 +314,22 @@ $('clear-photo-btn').addEventListener('click', () => {
   $('photo-input').value = '';
 });
 
-// ── Convert photo to base64 greyscale ──
+// ── Grayscale ──
 function fileToGrayscaleBase64(file) {
   return new Promise(resolve => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
+    const img = new Image(), url = URL.createObjectURL(file);
     img.onload = () => {
       const canvas = document.createElement('canvas');
       canvas.width = Math.min(img.width, 800);
       canvas.height = Math.round(img.height * (canvas.width / img.width));
       const ctx = canvas.getContext('2d');
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      // Greyscale filter
-      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const d = imgData.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const g = d[i]*0.299 + d[i+1]*0.587 + d[i+2]*0.114;
-        d[i] = d[i+1] = d[i+2] = g;
+      const d = ctx.getImageData(0,0,canvas.width,canvas.height);
+      for (let i=0;i<d.data.length;i+=4) {
+        const g = d.data[i]*.299+d.data[i+1]*.587+d.data[i+2]*.114;
+        d.data[i]=d.data[i+1]=d.data[i+2]=g;
       }
-      ctx.putImageData(imgData, 0, 0);
+      ctx.putImageData(d,0,0);
       URL.revokeObjectURL(url);
       resolve(canvas.toDataURL('image/jpeg', 0.75));
     };
@@ -188,153 +337,124 @@ function fileToGrayscaleBase64(file) {
   });
 }
 
-// ── Submit walk ──
+// ── Submit ──
 $('submit-btn').addEventListener('click', submitWalk);
-
 async function submitWalk() {
-  const user = auth.currentUser;
-  if (!user) return;
-  const startT = $('inp-start').value;
-  const endT   = $('inp-end').value;
-  const notes  = $('walk-notes').value.trim();
+  if (!currentUser || !currentGroupId) return;
+  const startT  = $('inp-start').value;
+  const endT    = $('inp-end').value;
+  const notes   = $('walk-notes').value.trim();
   const petName = $('inp-petname').value.trim() || '豆豆';
-
-  if (!startT) { showFormErr('請填寫開始時間'); return; }
-  if (!photoFile) { showFormErr('請上傳糞便照片'); return; }
-  if (!notes)  { showFormErr('請填寫備註'); return; }
   $('form-err').classList.add('hidden');
+  if (!startT)    { showFormErr('請填寫開始時間'); return; }
+  if (!photoFile) { showFormErr('請上傳糞便照片'); return; }
+  if (!notes)     { showFormErr('請填寫備註'); return; }
 
   let durSec = 0;
-  if (startT && endT) {
-    const [sh,sm] = startT.split(':').map(Number);
-    const [eh,em] = endT.split(':').map(Number);
-    let mins = (eh*60+em)-(sh*60+sm);
-    if (mins < 0) mins += 24*60;
-    durSec = mins * 60;
+  if (endT) {
+    const [sh,sm]=startT.split(':').map(Number), [eh,em]=endT.split(':').map(Number);
+    let mins=(eh*60+em)-(sh*60+sm); if(mins<0) mins+=24*60;
+    durSec = mins*60;
   }
-
-  const today    = new Date().toISOString().slice(0,10);
-  const startISO = `${today}T${startT}:00`;
-  const endISO   = endT ? `${today}T${endT}:00` : null;
-
-  const btn = $('submit-btn');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spin"></span> AI 分析中...';
+  const today=new Date().toISOString().slice(0,10);
+  const btn=$('submit-btn');
+  btn.disabled=true; btn.innerHTML='<span class="spin"></span> AI 分析中...';
   $('ai-result').classList.add('hidden');
-
   try {
-    // Convert photo to greyscale base64 (stored in Firestore)
-    let photoBase64 = null;
-    if (photoFile) {
-      photoBase64 = await fileToGrayscaleBase64(photoFile);
-    }
-
-    // Mock AI analysis
-    await new Promise(r => setTimeout(r, 900));
-    const { ai_tags, health_score } = mockAnalyze();
-
-    // Save to Firestore
-    await addDoc(collection(db, 'walks'), {
-      uid:          user.uid,
+    const photoBase64 = await fileToGrayscaleBase64(photoFile);
+    await new Promise(r=>setTimeout(r,900));
+    const {ai_tags,health_score} = mockAnalyze();
+    // Store under group, not user
+    await addDoc(collection(db,'groups',currentGroupId,'walks'), {
+      uid:          currentUser.uid,
+      userName:     currentUser.displayName || '成員',
       pet_name:     petName,
-      start_time:   startISO,
-      end_time:     endISO,
+      start_time:   `${today}T${startT}:00`,
+      end_time:     endT ? `${today}T${endT}:00` : null,
       duration:     durSec,
       photo_base64: photoBase64,
-      ai_tags,
-      health_score,
-      notes:        $('walk-notes').value.trim(),
+      ai_tags, health_score,
+      notes,
       created_at:   Timestamp.now(),
     });
-
     $('ai-result').classList.add('hidden');
-    showAIResult({ ai_tags, health_score });
-    $('walk-notes').value = '';
-    $('inp-petname').value = '豆豆';
+    showAIResult({ai_tags,health_score});
+    $('walk-notes').value='';
+    $('inp-petname').value='豆豆';
     $('clear-photo-btn').click();
     setDefaultTimes();
-  } catch(e) {
-    alert('打卡失敗：' + e.message);
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '完成打卡 ✓';
-  }
+  } catch(e) { alert('打卡失敗：'+e.message); }
+  finally { btn.disabled=false; btn.textContent='完成打卡 ✓'; }
 }
 
-function showAIResult({ ai_tags, health_score }) {
-  const circ = 144.5;
-  const arc  = $('score-arc');
-  arc.setAttribute('stroke-dasharray', `${(health_score/10)*circ} ${circ}`);
-  const color     = health_score>=7?'#22C55E':health_score>=4?'#F59E0B':'#EF4444';
-  const textColor = health_score>=7?'#4ade80':health_score>=4?'#fb923c':'#f87171';
-  arc.setAttribute('stroke', color);
-  $('score-num').textContent = health_score;
-  $('score-num').style.color = textColor;
-  $('score-label').textContent = health_score>=7?'👍 良好':health_score>=4?'⚠️ 注意':'🚨 警告';
-  const tagRow = $('ai-tags');
-  tagRow.innerHTML = '';
-  ['badge-green','badge-purple','badge-amber'].forEach((cls,i) => {
-    if (!ai_tags[i]) return;
-    const s = document.createElement('span');
-    s.className = `badge ${cls}`;
-    s.style.animationDelay = `${i*0.1}s`;
-    s.textContent = ai_tags[i];
-    tagRow.appendChild(s);
+function showFormErr(msg) { $('form-err').textContent='⚠️ '+msg; $('form-err').classList.remove('hidden'); }
+
+function showAIResult({ai_tags,health_score}) {
+  const circ=144.5, arc=$('score-arc');
+  arc.setAttribute('stroke-dasharray',`${(health_score/10)*circ} ${circ}`);
+  const color=health_score>=7?'#22C55E':health_score>=4?'#F59E0B':'#EF4444';
+  const tc=health_score>=7?'#4ade80':health_score>=4?'#fb923c':'#f87171';
+  arc.setAttribute('stroke',color);
+  $('score-num').textContent=health_score; $('score-num').style.color=tc;
+  $('score-label').textContent=health_score>=7?'👍 良好':health_score>=4?'⚠️ 注意':'🚨 警告';
+  const tagRow=$('ai-tags'); tagRow.innerHTML='';
+  ['badge-green','badge-purple','badge-amber'].forEach((cls,i)=>{
+    if(!ai_tags[i]) return;
+    const s=document.createElement('span');
+    s.className=`badge ${cls}`; s.style.animationDelay=`${i*.1}s`;
+    s.textContent=ai_tags[i]; tagRow.appendChild(s);
   });
   $('ai-result').classList.remove('hidden');
 }
 
-// ── Load records ──
+// ── Records ──
 $('refresh-btn').addEventListener('click', loadRecords);
-
 async function loadRecords() {
-  const user = auth.currentUser;
-  if (!user) return;
-  $('records-list').innerHTML = '<div style="display:flex;justify-content:center;padding:48px"><span class="spin" style="width:32px;height:32px;border-width:3px"></span></div>';
+  if (!currentGroupId) return;
+  $('records-list').innerHTML='<div style="display:flex;justify-content:center;padding:48px"><span class="spin" style="width:32px;height:32px;border-width:3px"></span></div>';
   try {
-    const q = query(
-      collection(db, 'walks'),
-      where('uid', '==', user.uid),
-      orderBy('created_at', 'desc')
-    );
-    const snap = await getDocs(q);
-    const recs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-    renderRecords(recs);
+    const q=query(collection(db,'groups',currentGroupId,'walks'),orderBy('created_at','desc'));
+    const snap=await getDocs(q);
+    renderRecords(snap.docs.map(d=>({id:d.id,...d.data()})));
   } catch(e) {
-    $('records-list').innerHTML = `<div class="empty"><div class="empty-emoji">😵</div><div>${e.message}</div></div>`;
+    $('records-list').innerHTML=`<div class="empty"><div class="empty-emoji">😵</div><div>${e.message}</div></div>`;
   }
 }
 
 function renderRecords(recs) {
   if (!recs.length) {
-    $('records-list').innerHTML = '<div class="empty"><div class="empty-emoji">🐕</div><p style="font-size:16px;margin-bottom:6px">還沒有任何紀錄</p><p style="font-size:13px">去打卡頁面記錄第一次遛狗！</p></div>';
+    $('records-list').innerHTML='<div class="empty"><div class="empty-emoji">🐕</div><p style="font-size:16px;margin-bottom:6px">還沒有任何紀錄</p><p style="font-size:13px">去打卡頁面記錄第一次遛狗！</p></div>';
     return;
   }
-  $('records-list').innerHTML = recs.map((r, i) => {
-    const thumb = r.photo_base64
-      ? `<img class="rec-thumb" src="${r.photo_base64}" alt="" onclick="openLightbox('${r.photo_base64}')">`
-      : `<div class="rec-placeholder">🐾</div>`;
-    const sc = r.health_score;
-    const textColor = sc>=7?'#4ade80':sc>=4?'#fb923c':'#f87171';
-    const barColor  = sc>=7?'var(--green)':sc>=4?'#f59e0b':'#ef4444';
-    const tags = (r.ai_tags||[]).map(t => `<span class="badge badge-purple" style="font-size:11px">${t}</span>`).join('');
-    const timeStr = fmtTimeRange(r.start_time, r.end_time);
-    const durStr  = r.duration ? fmtDur(r.duration) : '—';
-    const note    = r.notes ? ` · ${r.notes.slice(0,28)}${r.notes.length>28?'…':''}` : '';
-    return `<div class="rec-card" style="animation-delay:${i*0.05}s">
+  $('records-list').innerHTML=recs.map((r,i)=>{
+    const thumb=r.photo_base64
+      ?`<img class="rec-thumb" src="${r.photo_base64}" alt="" onclick="openLightbox('${r.photo_base64}')">`
+      :`<div class="rec-placeholder">🐾</div>`;
+    const sc=r.health_score;
+    const tc=sc>=7?'#4ade80':sc>=4?'#fb923c':'#f87171';
+    const bc=sc>=7?'var(--green)':sc>=4?'#f59e0b':'#ef4444';
+    const tags=(r.ai_tags||[]).map(t=>`<span class="badge badge-purple" style="font-size:11px">${t}</span>`).join('');
+    const timeStr=fmtTimeRange(r.start_time,r.end_time);
+    const durStr=r.duration?fmtDur(r.duration):'—';
+    const note=r.notes?` · ${r.notes.slice(0,28)}${r.notes.length>28?'…':''}`:'';
+    const petName=r.pet_name||'豆豆';
+    const poster=r.userName?`<span class="member-tag">${r.userName}</span>`:'';
+    const canDelete=r.uid===currentUser?.uid;
+    return `<div class="rec-card" style="animation-delay:${i*.05}s">
       ${thumb}
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
           <div>
-            <div style="font-weight:600;font-size:15px">${timeStr}</div>
+            <div style="font-weight:600;font-size:15px">${petName} · ${timeStr}</div>
             <div style="font-size:12px;color:var(--muted);margin-top:2px">⏱ ${durStr}${note}</div>
+            <div style="margin-top:4px">${poster}</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
-            <span style="font-size:18px;font-weight:800;color:${textColor}">${sc}</span>
-            <button class="btn-danger" onclick="deleteRecord('${r.id}')">刪除</button>
+            <span style="font-size:18px;font-weight:800;color:${tc}">${sc}</span>
+            ${canDelete?`<button class="btn-danger" onclick="deleteRecord('${r.id}')">刪除</button>`:''}
           </div>
         </div>
-        <div class="hbar"><div class="hbar-fill" style="width:${sc*10}%;background:${barColor}"></div></div>
+        <div class="hbar"><div class="hbar-fill" style="width:${sc*10}%;background:${bc}"></div></div>
         <div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:7px">${tags}</div>
       </div>
     </div>`;
@@ -344,56 +464,58 @@ function renderRecords(recs) {
 window.deleteRecord = async function(id) {
   if (!confirm('確定刪除這筆紀錄？')) return;
   try {
-    await deleteDoc(doc(db, 'walks', id));
+    await deleteDoc(doc(db,'groups',currentGroupId,'walks',id));
     loadRecords();
-  } catch(e) { alert('刪除失敗：' + e.message); }
+  } catch(e) { alert('刪除失敗：'+e.message); }
 };
 
 // ── Stats ──
 async function loadStats() {
-  const user = auth.currentUser;
-  if (!user) return;
-  $('stats-content').innerHTML = '<div style="display:flex;justify-content:center;padding:48px"><span class="spin" style="width:32px;height:32px;border-width:3px"></span></div>';
+  if (!currentGroupId) return;
+  $('stats-content').innerHTML='<div style="display:flex;justify-content:center;padding:48px"><span class="spin" style="width:32px;height:32px;border-width:3px"></span></div>';
   try {
-    const q = query(collection(db,'walks'), where('uid','==',user.uid));
-    const snap = await getDocs(q);
-    const recs = snap.docs.map(d => d.data());
-    const total = recs.length;
-    const avgH  = total ? +(recs.reduce((a,r)=>a+r.health_score,0)/total).toFixed(1) : null;
-    const totalDur = recs.reduce((a,r)=>a+(r.duration||0),0);
-    const lastWalk = recs.sort((a,b)=>b.created_at?.seconds-a.created_at?.seconds)[0]?.created_at;
-    const hc = (avgH||0)>=7?'#4ade80':(avgH||0)>=4?'#fb923c':'var(--purple)';
-    const lastStr = lastWalk ? fmtDate(new Date(lastWalk.seconds*1000)) : null;
-    $('stats-content').innerHTML = `
+    const snap=await getDocs(collection(db,'groups',currentGroupId,'walks'));
+    const recs=snap.docs.map(d=>d.data());
+    const total=recs.length;
+    const avgH=total?+(recs.reduce((a,r)=>a+r.health_score,0)/total).toFixed(1):null;
+    const totalDur=recs.reduce((a,r)=>a+(r.duration||0),0);
+    const last=recs.sort((a,b)=>b.created_at?.seconds-a.created_at?.seconds)[0]?.created_at;
+    const hc=(avgH||0)>=7?'#4ade80':(avgH||0)>=4?'#fb923c':'var(--purple)';
+    const lastStr=last?fmtDate(new Date(last.seconds*1000)):null;
+    // Member breakdown
+    const byMember={};
+    recs.forEach(r=>{ byMember[r.userName||'未知']=(byMember[r.userName||'未知']||0)+1; });
+    const memberRows=Object.entries(byMember).map(([name,count])=>
+      `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <span>${name}</span><span style="color:var(--purple);font-weight:700">${count} 次</span>
+      </div>`).join('');
+    $('stats-content').innerHTML=`
       <div class="stat-grid">
-        <div class="stat-card"><div class="stat-val" style="color:var(--purple)">${total}</div><div class="stat-lbl">🐕 總遛狗次數</div></div>
+        <div class="stat-card"><div class="stat-val" style="color:var(--purple)">${total}</div><div class="stat-lbl">🐕 群組總次數</div></div>
         <div class="stat-card"><div class="stat-val" style="color:${hc}">${avgH||'—'}</div><div class="stat-lbl">❤️ 平均健康分數</div></div>
         <div class="stat-card" style="grid-column:1/-1"><div class="stat-val" style="color:#60a5fa">${fmtDur(totalDur)}</div><div class="stat-lbl">⏱ 總遛狗時長</div></div>
       </div>
-      ${lastStr ? `<div class="card" style="padding:18px"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">最後一次遛狗</div><div style="font-weight:700">${lastStr}</div></div>` : ''}
-      ${!total ? '<div class="empty"><div class="empty-emoji">📈</div><p>開始打卡後，統計就會出現在這裡</p></div>' : ''}`;
-  } catch(e) { $('stats-content').innerHTML = `<div class="empty">${e.message}</div>`; }
+      ${memberRows?`<div class="card" style="padding:18px;margin-bottom:16px"><div style="font-size:13px;font-weight:700;margin-bottom:8px">👥 成員打卡次數</div>${memberRows}</div>`:''}
+      ${lastStr?`<div class="card" style="padding:18px"><div style="font-size:12px;color:var(--muted);margin-bottom:4px">最後一次遛狗</div><div style="font-weight:700">${lastStr}</div></div>`:''}
+      ${!total?'<div class="empty"><div class="empty-emoji">📈</div><p>開始打卡後，統計就會出現在這裡</p></div>':''}`;
+  } catch(e) { $('stats-content').innerHTML=`<div class="empty">${e.message}</div>`; }
 }
 
 // ── Lightbox ──
-window.openLightbox = src => {
-  $('lightbox-img').src = src;
-  $('lightbox').classList.remove('hidden');
-};
-$('lightbox-close').addEventListener('click', () => $('lightbox').classList.add('hidden'));
-$('lightbox').addEventListener('click', e => { if (e.target===$('lightbox')) $('lightbox').classList.add('hidden'); });
+window.openLightbox=src=>{ $('lightbox-img').src=src; $('lightbox').classList.remove('hidden'); };
+$('lightbox-close').addEventListener('click',()=>$('lightbox').classList.add('hidden'));
+$('lightbox').addEventListener('click',e=>{ if(e.target===$('lightbox')) $('lightbox').classList.add('hidden'); });
 
 // ── Helpers ──
-function fmtTimeRange(start, end) {
+function fmtTimeRange(start,end) {
   if (!start) return '—';
-  const t = iso => iso.slice(11,16);
-  const date = start.slice(5,10).replace('-','/');
-  return end ? `${date} ${t(start)} — ${t(end)}` : `${date} ${t(start)}`;
+  const t=iso=>iso.slice(11,16), date=start.slice(5,10).replace('-','/');
+  return end?`${date} ${t(start)} — ${t(end)}`:`${date} ${t(start)}`;
 }
 function fmtDur(sec) {
   if (!sec) return '—';
-  const m = Math.floor(sec/60);
-  return m>=60 ? `${Math.floor(m/60)} 小時 ${m%60} 分` : `${m} 分鐘`;
+  const m=Math.floor(sec/60);
+  return m>=60?`${Math.floor(m/60)} 小時 ${m%60} 分`:`${m} 分鐘`;
 }
 function fmtDate(d) {
   return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
@@ -401,42 +523,49 @@ function fmtDate(d) {
 </script>
 
 <style>
-:root {
-  --purple: #A855F7;
-  --purple-dim: rgba(168,85,247,0.15);
-  --purple-glow: rgba(168,85,247,0.5);
-  --green: #22C55E;
-  --bg: #08080f;
-  --surface: rgba(255,255,255,0.04);
-  --border: rgba(255,255,255,0.08);
-  --text: #e8e8f0;
-  --muted: rgba(232,232,240,0.4);
+:root{
+  --purple:#7c3aed;--purple-dim:rgba(124,58,237,0.1);--purple-glow:rgba(124,58,237,0.4);--green:#16a34a;
+  --bg:#f5f3ff;--bg2:#ede9fe;--surface:#ffffff;--surface2:#f8f5ff;
+  --border:rgba(124,58,237,0.15);--text:#1e1030;--muted:#6b7280;
+  --topbar:rgba(255,255,255,0.9);--shadow:0 2px 12px rgba(124,58,237,0.08);
+  --modal-bg:#fff;--spin-track:rgba(0,0,0,0.1);
+}
+body.dark{
+  --purple:#A855F7;--purple-dim:rgba(168,85,247,0.15);--purple-glow:rgba(168,85,247,0.5);--green:#22C55E;
+  --bg:#08080f;--bg2:#0f0f1a;--surface:rgba(255,255,255,0.04);--surface2:rgba(255,255,255,0.06);
+  --border:rgba(255,255,255,0.08);--text:#e8e8f0;--muted:rgba(232,232,240,0.4);
+  --topbar:rgba(8,8,15,0.85);--shadow:none;
+  --modal-bg:#13131f;--spin-track:rgba(255,255,255,0.15);
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;background-image:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(139,92,246,.2) 0%,transparent 70%),radial-gradient(ellipse 50% 40% at 90% 90%,rgba(34,197,94,.07) 0%,transparent 60%)}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;transition:background .3s,color .3s;
+  background-image:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(124,58,237,.12) 0%,transparent 70%),radial-gradient(ellipse 50% 40% at 90% 90%,rgba(22,163,74,.06) 0%,transparent 60%)}
+body.dark{background-image:radial-gradient(ellipse 80% 50% at 50% -10%,rgba(139,92,246,.2) 0%,transparent 70%),radial-gradient(ellipse 50% 40% at 90% 90%,rgba(34,197,94,.07) 0%,transparent 60%)}
 .hidden{display:none!important}
 .page{animation:fadeUp .3s ease both}
 @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:20px;backdrop-filter:blur(20px)}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:20px;backdrop-filter:blur(20px);box-shadow:var(--shadow);transition:background .3s,border-color .3s}
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:11px 22px;border-radius:12px;border:none;cursor:pointer;font-size:14px;font-weight:500;transition:all .2s;user-select:none;font-family:inherit}
 .btn:active{transform:scale(.95)}
 .btn-primary{background:linear-gradient(135deg,#7c3aed,#9333ea);color:#fff}
 .btn-primary:hover{box-shadow:0 0 28px var(--purple-glow);transform:translateY(-1px)}
 .btn-primary:active{transform:scale(.95);box-shadow:none}
-.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border);transition:all .2s}
 .btn-ghost:hover{background:var(--surface);color:var(--text)}
 .btn-danger{background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.25);padding:6px 12px;font-size:12px;border-radius:8px;cursor:pointer;font-family:inherit;transition:all .2s}
 .btn-danger:hover{background:rgba(239,68,68,.2)}
 .btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
 .btn-sm{padding:7px 14px;font-size:13px}
+.btn-red{background:rgba(239,68,68,.1);color:#f87171;border:1px solid rgba(239,68,68,.25)}
+.btn-red:hover{background:rgba(239,68,68,.2)}
 .w-full{width:100%}
-.input{width:100%;padding:11px 15px;background:rgba(255,255,255,0.05);border:1px solid var(--border);border-radius:11px;color:var(--text);font-family:inherit;font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s}
+.input{width:100%;padding:11px 15px;background:var(--surface2);border:1px solid var(--border);border-radius:11px;color:var(--text);font-family:inherit;font-size:14px;outline:none;transition:border-color .2s,box-shadow .2s,background .3s}
 .input:focus{border-color:var(--purple);box-shadow:0 0 0 3px rgba(168,85,247,.12)}
 .input::placeholder{color:var(--muted)}
 textarea.input{resize:none;line-height:1.6}
 input[type="time"].input{cursor:pointer}
-input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.35);cursor:pointer}
-.field{margin-bottom:14px}
+input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(0) opacity(.5);cursor:pointer}
+body.dark input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.35)}
 .label{font-size:12px;color:var(--muted);margin-bottom:5px;display:block;letter-spacing:.03em}
 .badge{display:inline-flex;align-items:center;padding:3px 10px;border-radius:999px;font-size:11px;font-weight:500;animation:pop .4s cubic-bezier(.34,1.56,.64,1) both}
 @keyframes pop{from{opacity:0;transform:scale(.5)}to{opacity:1;transform:scale(1)}}
@@ -444,24 +573,29 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
 .badge-green{background:rgba(34,197,94,.1);color:#4ade80;border:1px solid rgba(34,197,94,.25)}
 .badge-amber{background:rgba(245,158,11,.1);color:#fbbf24;border:1px solid rgba(245,158,11,.25)}
 .alert-err{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:10px 14px;color:#f87171;font-size:13px;margin-bottom:14px}
+.member-tag{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;background:rgba(96,165,250,.1);color:#60a5fa;border:1px solid rgba(96,165,250,.25)}
 
 /* LOGIN */
 #login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
-.login-card{width:100%;max-width:400px;padding:36px 32px}
-.login-logo{width:60px;height:60px;border-radius:16px;background:linear-gradient(135deg,#7c3aed,#9333ea);display:flex;align-items:center;justify-content:center;font-size:26px;margin-bottom:22px;box-shadow:0 8px 28px rgba(124,58,237,.4)}
-.divider{display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--muted);font-size:12px}
-.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
-.toggle-link{color:var(--purple);cursor:pointer}
-.toggle-link:hover{text-decoration:underline}
+.login-card{width:100%;max-width:400px;padding:36px 32px;text-align:center;position:relative}
+.login-logo{width:60px;height:60px;border-radius:16px;background:linear-gradient(135deg,#7c3aed,#9333ea);display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 22px;box-shadow:0 8px 28px rgba(124,58,237,.4)}
+
+/* GROUP SETUP */
+#group-setup{min-height:100vh;align-items:center;justify-content:center;padding:24px}
+.setup-card{width:100%;max-width:420px;padding:32px 28px}
+.setup-divider{display:flex;align-items:center;gap:10px;margin:20px 0;color:var(--muted);font-size:12px}
+.setup-divider::before,.setup-divider::after{content:'';flex:1;height:1px;background:var(--border)}
 
 /* APP */
-.topbar{position:sticky;top:0;z-index:100;padding:13px 24px;display:flex;align-items:center;justify-content:space-between;background:rgba(8,8,15,.85);backdrop-filter:blur(20px);border-bottom:1px solid var(--border)}
-.brand{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:700;letter-spacing:-.02em}
+.topbar{position:sticky;top:0;z-index:100;padding:13px 24px;display:flex;align-items:center;justify-content:space-between;background:var(--topbar);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);gap:8px;transition:background .3s}
+.brand{display:flex;align-items:center;gap:9px;font-size:17px;font-weight:700;letter-spacing:-.02em;flex-shrink:0}
 .brand-dot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+.group-id-label{font-size:11px;color:var(--muted);background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:3px 8px;flex-shrink:0}
 .nav{display:flex;gap:3px}
 .nav-btn{padding:7px 15px;border-radius:9px;border:none;cursor:pointer;font-family:inherit;font-size:13px;background:transparent;color:var(--muted);transition:all .2s}
 .nav-btn:hover{background:var(--surface);color:var(--text)}
 .nav-btn.active{background:var(--purple-dim);color:var(--purple)}
+.topbar-right{display:flex;align-items:center;gap:6px;flex-shrink:0}
 .main{flex:1;padding:28px 24px;max-width:720px;margin:0 auto;width:100%}
 .section-title{font-size:21px;font-weight:700;margin-bottom:18px;letter-spacing:-.02em}
 .time-row{display:grid;grid-template-columns:1fr 28px 1fr;align-items:end;gap:8px}
@@ -478,34 +612,44 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
 .score-wrap svg{transform:rotate(-90deg)}
 .score-num{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800}
 .tag-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
-.rec-card{display:flex;gap:14px;padding:16px;border-radius:16px;border:1px solid var(--border);background:var(--surface);transition:all .2s;animation:fadeUp .4s ease both;margin-bottom:12px}
+.rec-card{display:flex;gap:14px;padding:16px;border-radius:16px;border:1px solid var(--border);background:var(--surface);transition:all .2s;animation:fadeUp .4s ease both;margin-bottom:12px;box-shadow:var(--shadow)}
 .rec-card:hover{border-color:rgba(168,85,247,.28);transform:translateY(-2px);box-shadow:0 6px 24px rgba(168,85,247,.07)}
 .rec-thumb{width:72px;height:72px;border-radius:11px;object-fit:cover;flex-shrink:0;filter:grayscale(100%) contrast(1.1);border:1px solid var(--border);cursor:zoom-in;transition:filter .3s}
 .rec-thumb:hover{filter:none}
-.rec-placeholder{width:72px;height:72px;border-radius:11px;flex-shrink:0;background:rgba(255,255,255,.04);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px}
-.hbar{height:3px;border-radius:2px;background:rgba(255,255,255,.07);overflow:hidden;margin-top:8px}
+.rec-placeholder{width:72px;height:72px;border-radius:11px;flex-shrink:0;background:var(--surface2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:24px}
+.hbar{height:3px;border-radius:2px;background:var(--border);overflow:hidden;margin-top:8px}
 .hbar-fill{height:100%;border-radius:2px;transition:width 1s ease}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:20px}
-.stat-card{padding:20px;border-radius:16px;background:var(--surface);border:1px solid var(--border)}
+.stat-card{padding:20px;border-radius:16px;background:var(--surface);border:1px solid var(--border);box-shadow:var(--shadow)}
 .stat-val{font-size:34px;font-weight:800;letter-spacing:-1px}
 .stat-lbl{font-size:12px;color:var(--muted);margin-top:3px}
+
+/* INVITE MODAL */
+#invite-modal{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.7);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:24px}
+.modal-box{background:var(--modal-bg);border:1px solid var(--border);border-radius:20px;padding:32px 28px;max-width:360px;width:100%;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.2)}
+.code-display{font-size:36px;font-weight:800;letter-spacing:8px;color:var(--purple);background:rgba(168,85,247,.08);border:1px solid rgba(168,85,247,.2);border-radius:14px;padding:18px;margin:20px 0;font-family:monospace}
+
+/* LIGHTBOX */
 #lightbox{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.92);backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;animation:fadeIn .2s ease;cursor:pointer}
 #lightbox img{max-width:90vw;max-height:85vh;border-radius:14px;filter:grayscale(100%) contrast(1.1)}
 #lightbox-close{position:absolute;top:18px;right:18px;background:rgba(255,255,255,.1);border:none;color:#fff;width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:18px;display:flex;align-items:center;justify-content:center}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .empty{text-align:center;padding:56px 20px;color:var(--muted)}
 .empty-emoji{font-size:52px;margin-bottom:14px}
-.spin{width:20px;height:20px;border-radius:50%;border:2px solid rgba(255,255,255,.15);border-top-color:var(--purple);animation:spinAnim .7s linear infinite;display:inline-block}
+.spin{width:20px;height:20px;border-radius:50%;border:2px solid var(--spin-track);border-top-color:var(--purple);animation:spinAnim .7s linear infinite;display:inline-block}
 @keyframes spinAnim{to{transform:rotate(360deg)}}
-@media(max-width:560px){.topbar{padding:11px 14px}.nav-btn{padding:6px 10px;font-size:12px}.main{padding:18px 14px}.login-card{padding:28px 20px}}
+@media(max-width:560px){.topbar{padding:11px 14px;flex-wrap:wrap}.nav-btn{padding:6px 10px;font-size:12px}.main{padding:18px 14px}}
 </style>
 </head>
 <body>
 
 <!-- LOGIN -->
 <div id="login-page" class="page">
-  <div class="card login-card" style="text-align:center">
-    <div class="login-logo" style="margin:0 auto 22px">🐾</div>
+  <div class="card login-card">
+    <div style="position:absolute;top:16px;right:16px">
+      <button class="btn btn-ghost btn-sm" onclick="toggleTheme()" id="login-theme-btn" style="font-size:16px;padding:6px 10px">🌙</button>
+    </div>
+    <div class="login-logo">🐾</div>
     <h2 style="font-size:24px;font-weight:800;margin-bottom:6px">PooPoo Tracker</h2>
     <p style="color:var(--muted);font-size:13px;margin-bottom:28px">記錄毛孩的每一次健康遛狗 🐕</p>
     <div id="auth-error" class="alert-err hidden"></div>
@@ -513,7 +657,26 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
       <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="20">
       使用 Google 登入
     </button>
-    <p style="font-size:11px;color:var(--muted);margin-top:20px">登入即代表你同意我們記錄你家毛孩的便便 🙏</p>
+  </div>
+</div>
+
+<!-- GROUP SETUP -->
+<div id="group-setup" class="hidden" style="min-height:100vh;align-items:center;justify-content:center;padding:24px">
+  <div class="card setup-card">
+    <div style="font-size:32px;margin-bottom:12px">👥</div>
+    <h2 style="font-size:20px;font-weight:800;margin-bottom:4px">設定群組</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:24px">嗨 <strong id="setup-user-name"></strong>，建立或加入一個家庭群組</p>
+    <div id="group-error" class="alert-err hidden"></div>
+
+    <button class="btn btn-primary w-full" id="create-group-btn" style="padding:13px;font-size:15px">
+      ✨ 建立新群組
+    </button>
+
+    <div class="setup-divider">或輸入邀請碼加入</div>
+
+    <input class="input" type="text" id="inp-invite-code" placeholder="輸入 6 位邀請碼"
+      style="text-align:center;font-size:20px;letter-spacing:6px;font-weight:700;margin-bottom:10px">
+    <button class="btn btn-ghost w-full" id="join-group-btn">加入群組</button>
   </div>
 </div>
 
@@ -526,7 +689,12 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
       <button class="nav-btn" data-page="records">📋 紀錄</button>
       <button class="nav-btn" data-page="stats">📊 統計</button>
     </nav>
-    <button class="btn btn-ghost btn-sm" id="logout-btn">登出</button>
+    <div class="topbar-right">
+      <span class="group-id-label" id="group-id-label"></span>
+      <button class="btn btn-ghost btn-sm" id="show-code-btn" title="查看邀請碼">🔗</button>
+      <button class="btn btn-ghost btn-sm" id="theme-btn" onclick="toggleTheme()" title="切換主題">🌙</button>
+      <button class="btn btn-ghost btn-sm" id="logout-btn">登出</button>
+    </div>
   </div>
   <div class="main">
 
@@ -540,21 +708,12 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
       <div class="card" style="padding:22px;margin-bottom:16px">
         <div class="label" style="margin-bottom:12px">🕐 遛狗時間</div>
         <div class="time-row">
-          <div>
-            <div class="label">開始時間</div>
-            <input class="input" type="time" id="inp-start">
-          </div>
+          <div><div class="label">開始時間</div><input class="input" type="time" id="inp-start"></div>
           <div class="time-arrow">→</div>
-          <div>
-            <div class="label">結束時間</div>
-            <input class="input" type="time" id="inp-end">
-          </div>
+          <div><div class="label">結束時間</div><input class="input" type="time" id="inp-end"></div>
         </div>
-        <div id="dur-display" class="hidden">
-          <div class="dur-pill">⏱ <span id="dur-text"></span></div>
-        </div>
+        <div id="dur-display" class="hidden"><div class="dur-pill">⏱ <span id="dur-text"></span></div></div>
       </div>
-
       <div class="card" style="padding:18px;margin-bottom:16px">
         <div class="label" style="margin-bottom:10px">📸 上傳糞便照片（自動轉黑白）</div>
         <div class="dropzone" id="dropzone">
@@ -570,15 +729,12 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
           <button class="btn btn-ghost btn-sm" id="clear-photo-btn">✕ 移除</button>
         </div>
       </div>
-
       <div class="card" style="padding:18px;margin-bottom:16px">
-        <label class="label">備註（可選）</label>
-        <textarea class="input" id="walk-notes" placeholder="今天的狀況...（必填）" rows="2"></textarea>
+        <label class="label">備註（必填）</label>
+        <textarea class="input" id="walk-notes" placeholder="今天的狀況..." rows="2"></textarea>
       </div>
-
       <div id="form-err" class="alert-err hidden"></div>
       <button class="btn btn-primary w-full" id="submit-btn" style="padding:15px;font-size:15px">完成打卡 ✓</button>
-
       <div id="ai-result" class="ai-box hidden">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
           <div class="pulse"></div>
@@ -614,12 +770,27 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
     <div id="page-stats" class="page hidden">
       <div class="section-title">健康統計 📊</div>
       <div id="stats-content"></div>
+      <div style="margin-top:24px">
+        <button class="btn btn-red btn-sm" id="leave-group-btn">離開群組</button>
+      </div>
     </div>
 
   </div>
 </div>
 
-<!-- Lightbox -->
+<!-- INVITE MODAL -->
+<div id="invite-modal" class="hidden">
+  <div class="modal-box">
+    <div style="font-size:28px;margin-bottom:8px">🎉</div>
+    <h3 style="font-size:18px;font-weight:800;margin-bottom:6px">群組建立成功！</h3>
+    <p style="color:var(--muted);font-size:13px">把邀請碼傳給家人，讓他們加入</p>
+    <div class="code-display" id="display-code"></div>
+    <button class="btn btn-primary w-full" id="copy-code-btn" style="margin-bottom:10px">複製邀請碼</button>
+    <button class="btn btn-ghost w-full" id="close-modal-btn">開始使用</button>
+  </div>
+</div>
+
+<!-- LIGHTBOX -->
 <div id="lightbox" class="hidden">
   <button id="lightbox-close">✕</button>
   <img id="lightbox-img" alt="">
