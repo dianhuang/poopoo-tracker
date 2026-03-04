@@ -10,7 +10,7 @@
 ══════════════════════════════════════════ -->
 <script type="module">
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged }
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
 import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, orderBy, Timestamp }
   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
@@ -73,50 +73,27 @@ function showApp() {
 }
 
 // ── Register / Login ──
-let isReg = false;
-$('toggle-mode').addEventListener('click', () => {
-  isReg = !isReg;
-  $('auth-title').textContent   = isReg ? '建立帳號' : '登入帳號';
-  $('auth-sub').textContent     = isReg ? '開始記錄毛孩的每一步' : '歡迎回來，記錄毛孩的健康';
-  $('auth-btn').textContent     = isReg ? '建立帳號' : '登入';
-  $('toggle-label').textContent = isReg ? '已有帳號？' : '還沒有帳號？';
-  $('toggle-mode').textContent  = isReg ? '登入' : '立即註冊';
-  $('field-name').classList.toggle('hidden', !isReg);
-  $('auth-error').classList.add('hidden');
-});
+const provider = new GoogleAuthProvider();
 
-$('inp-password').addEventListener('keydown', e => { if (e.key==='Enter') doAuth(); });
-$('auth-btn').addEventListener('click', doAuth);
-
-async function doAuth() {
-  const email = $('inp-email').value.trim();
-  const pass  = $('inp-password').value;
+$('auth-btn').addEventListener('click', async () => {
   $('auth-error').classList.add('hidden');
-  if (!email || !pass) return showAuthErr('請填寫 Email 與密碼');
   $('auth-btn').disabled = true;
-  $('auth-btn').innerHTML = '<span class="spin"></span>';
+  $('auth-btn').innerHTML = '<span class="spin"></span> 登入中...';
   try {
-    if (isReg) {
-      await createUserWithEmailAndPassword(auth, email, pass);
-    } else {
-      await signInWithEmailAndPassword(auth, email, pass);
-    }
+    await signInWithPopup(auth, provider);
     // onAuthStateChanged will fire showApp()
   } catch(e) {
     const msg = {
-      'auth/email-already-in-use': 'Email 已被使用',
-      'auth/invalid-email':        'Email 格式錯誤',
-      'auth/weak-password':        '密碼至少需要 6 個字元',
-      'auth/user-not-found':       '帳號不存在',
-      'auth/wrong-password':       '密碼錯誤',
-      'auth/invalid-credential':   '帳號或密碼錯誤',
-    }[e.code] || e.message;
+      'auth/popup-closed-by-user':    '登入視窗被關閉，請再試一次',
+      'auth/cancelled-popup-request': '登入已取消',
+      'auth/popup-blocked':           '請允許彈出視窗後再試',
+    }[e.code] || '登入失敗：' + e.message;
     showAuthErr(msg);
   } finally {
     $('auth-btn').disabled = false;
-    $('auth-btn').textContent = isReg ? '建立帳號' : '登入';
+    $('auth-btn').innerHTML = '<img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="18"> 使用 Google 登入';
   }
-}
+});
 function showAuthErr(msg) { $('auth-error').textContent = msg; $('auth-error').classList.remove('hidden'); }
 function showFormErr(msg) { $('form-err').textContent = '⚠️ ' + msg; $('form-err').classList.remove('hidden'); }
 
@@ -527,29 +504,16 @@ input[type="time"]::-webkit-calendar-picker-indicator{filter:invert(1) opacity(.
 
 <!-- LOGIN -->
 <div id="login-page" class="page">
-  <div class="card login-card">
-    <div class="login-logo">🐾</div>
-    <h2 style="font-size:24px;font-weight:800;margin-bottom:3px" id="auth-title">登入帳號</h2>
-    <p style="color:var(--muted);font-size:13px;margin-bottom:24px" id="auth-sub">歡迎回來，記錄毛孩的健康</p>
+  <div class="card login-card" style="text-align:center">
+    <div class="login-logo" style="margin:0 auto 22px">🐾</div>
+    <h2 style="font-size:24px;font-weight:800;margin-bottom:6px">PooPoo Tracker</h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:28px">記錄毛孩的每一次健康遛狗 🐕</p>
     <div id="auth-error" class="alert-err hidden"></div>
-    <div id="field-name" class="field hidden">
-      <label class="label">名稱（可選）</label>
-      <input class="input" type="text" id="inp-name" placeholder="你的名字">
-    </div>
-    <div class="field">
-      <label class="label">Email</label>
-      <input class="input" type="email" id="inp-email" placeholder="you@example.com">
-    </div>
-    <div class="field">
-      <label class="label">密碼</label>
-      <input class="input" type="password" id="inp-password" placeholder="••••••••（至少 6 位）">
-    </div>
-    <button class="btn btn-primary w-full" id="auth-btn" style="margin-top:4px">登入</button>
-    <div class="divider">還沒有帳號？</div>
-    <p style="text-align:center;font-size:13px;color:var(--muted)">
-      <span id="toggle-label">還沒有帳號？</span>
-      <a class="toggle-link" id="toggle-mode">立即註冊</a>
-    </p>
+    <button class="btn w-full" id="auth-btn" style="background:#fff;color:#1f1f1f;font-size:15px;padding:13px;border-radius:12px;gap:10px;font-weight:600">
+      <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" width="20">
+      使用 Google 登入
+    </button>
+    <p style="font-size:11px;color:var(--muted);margin-top:20px">登入即代表你同意我們記錄你家毛孩的便便 🙏</p>
   </div>
 </div>
 
