@@ -394,7 +394,7 @@ async function submitWalk() {
 
 function showFormErr(msg) { $('form-err').textContent='⚠️ '+msg; $('form-err').classList.remove('hidden'); }
 
-function showAIResult({ai_tags,health_score}) {
+function showAIResult({ai_tags,health_score,summary}) {
   const circ=144.5, arc=$('score-arc');
   arc.setAttribute('stroke-dasharray',`${(health_score/10)*circ} ${circ}`);
   const color=health_score>=7?'#22C55E':health_score>=4?'#F59E0B':'#EF4444';
